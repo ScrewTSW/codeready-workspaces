@@ -23,13 +23,18 @@ timeout(120) {
 
         extensionFiles.each { extensionFile ->
             def extensionYaml = readYaml file: extensionFile.getPath()
-            if (!extensionYaml.spec.extensions) {
+            if (extensionYaml.type!="VS Code extension") {
+                echo "not a VS Code extension: ${extensionFile.getPath()}"
+                return
+            }
+            def extensionPaths = extensionYaml.spec.extensions
+            if (!extensionPaths) {
                 echo "extensions are not present in plugin ${extensionFile.getPath()} skipping"
                 return
             }
-            def extensionPath = extensionYaml.spec.extensions[0]
-            echo "processing extension ${extensionPath}"
-            if (extensionPath.contains("marketplace.visualstudio.com")) {
+            extensionPaths.each { extensionPath ->
+                echo "processing extension ${extensionPath}"
+
                 def registryLocation = extensionPath.split("//")[1]
                 echo "selected extension ${registryLocation}"
 
@@ -40,21 +45,40 @@ timeout(120) {
                     return
                 }
 
-                def repository = extensionYaml.repository
-                echo "${repository}"
-                // parse extension URL to get the version of the plugin, which should be second to last
-                def extensionName = extensionYaml.name
+                def repository
+                def branch
 
-                // infering the branch from the version of the plugin in the extension URL
-                // and prefixing with 'v'
-                def branch = "v" + extensionPath.split("${extensionName}/")[1].split("/vspackage")[0]
+                if (registryLocation.contains("marketplace.visualstudio.com")) {
+                    repository = extensionYaml.repository
+                    // parse extension URL to get the version of the plugin, which should be second to last
+                    def extensionName = extensionYaml.name
 
-                echo "${branch}"
+                    // infering the branch from the version of the plugin in the extension URL
+                    // and prefixing with 'v'
+                    branch = "v" + extensionPath.split("${extensionName}/")[1].split("/vspackage")[0]
+                } else if (registryLocation.contains("download.jboss.org") || registryLocation.contains("github.com/che-incubator/")) {
+                    // do not need to rebuild extensions hosted on jboss or che-incubator repositories
+                    echo "omitting extension ${extensionPath}"
+                    return
+                } else if (registryLocation.contains("github.com")) {
+                    repository = extensionPath.split("/releases/")[0];
+                    // branch is infered from release tag
+                    branch = registryLocation.split("/releases/download/")[1].split("/")[0];
+                } else {
+                    echo "omitting extension ${extensionPath}"
+                    return
+                }
+                echo "processing extension ${extensionPath}"
 
+                if ((repository) && (branch)) {
 
-                def buildjob = build job: 'vscode-extensions-packaging', parameters: [ string(name: 'extensionPath', value: repository), string(name: 'branchToBuildPlugin', value: branch) ]
-                jobs.put(registryLocation, buildjob)
+                    echo "adding a build job with repository ${repository} and branch ${branch}"
+                    def buildjob = build job: 'vscode-extensions-packaging', parameters: [ string(name: 'extensionPath', value: repository), string(name: 'branchToBuildPlugin', value: branch) ]
+                    jobs.put(registryLocation, buildjob)
+                }
+
             }
+
         }
         sh "mkdir vsix"
         jobs.each { fileLocation, job ->
@@ -63,8 +87,6 @@ timeout(120) {
         }
 
         sh "tar -czvf vsix.tar.gz vsix"
-
-        // TODO deploy artifact to pkgs.devel?
 
         archiveArtifacts artifacts: '*.tar.gz', fingerprint: true
     }
